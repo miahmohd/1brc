@@ -25,6 +25,9 @@ $(TARGET): $(SRC_FILES)
 run: $(TARGET)
 	./$(TARGET)
 
+bench: $(TARGET)
+	hyperfine -w 1 -r 3 "./$(TARGET)"
+
 profile: all
 	perf record --call-graph dwarf -F99 ./$(TARGET)
 	perf script -F +pid > ./test.perf
