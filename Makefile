@@ -26,7 +26,7 @@ run: $(TARGET)
 	./$(TARGET) measurements.txt
 
 bench: $(TARGET)
-	hyperfine -w 1 -r 3 './$(TARGET) measurements.txt'
+	hyperfine -w 1 -r 5 './$(TARGET) measurements.txt'
 
 profile: all
 	perf record --call-graph dwarf -F99 ./$(TARGET) measurements.txt
