@@ -23,12 +23,12 @@ $(TARGET): $(SRC_FILES)
 	cargo build --profile=release-with-debug
 
 run: $(TARGET)
-	./$(TARGET)
+	./$(TARGET) measurements.txt
 
 bench: $(TARGET)
-	hyperfine -w 1 -r 3 "./$(TARGET)"
+	hyperfine -w 1 -r 3 ./$(TARGET) measurements.txt
 
 profile: all
-	perf record --call-graph dwarf -F99 ./$(TARGET)
+	perf record --call-graph dwarf -F99 ./$(TARGET) measurements.txt
 	perf script -F +pid > ./test.perf
 
