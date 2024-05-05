@@ -3,7 +3,6 @@ use std::{
     env,
     fmt::Display,
     fs::File,
-    io::BufRead,
     os::unix::fs::FileExt,
     thread::{self, ScopedJoinHandle},
 };
@@ -72,8 +71,7 @@ fn main() -> Result<()> {
 
     let f = File::open(&args[1])?;
     let file_size = f.metadata()?.len();
-    // let available_parallelism: usize = thread::available_parallelism()?.into();
-    let available_parallelism: usize = 1;
+    let available_parallelism: usize = thread::available_parallelism()?.into();
     let work_size = file_size / (available_parallelism as u64);
 
     thread::scope(|scope| {
@@ -113,149 +111,82 @@ fn process_chunk(
     let mut map: HashMap<Vec<u8>, Record> = HashMap::new();
 
     let mut buffer = [0; CHUNK_SIZE];
-    let mut rest: [u8; 100] = [0; 100];
-    let mut rest_len = 0;
 
-    // println!(
-    //     "{:?}: file size {}, start {} end {}",
-    //     thread::current().id(),
-    //     file_size,
-    //     start_offset,
-    //     end_offset
-    // );
+    let mut start_offset = if start_offset == 0 {
+        start_offset
+    } else {
+        align_start_line(f, start_offset)
+    };
 
-    let mut start_offset = align_start(f, start_offset);
-    let end_offset = align_end(f, file_size, end_offset);
+    let end_offset = if end_offset == file_size {
+        end_offset
+    } else {
+        align_start_line(f, end_offset)
+    };
 
     f.read_at(&mut buffer, start_offset).unwrap();
 
-    println!(
-        "{:?}: first aligned line {:?}",
-        thread::current().name(),
-        buffer.lines().next()
-    );
-
-    // println!(
-    //     "{:?} aligned: file size {}, start {} end {}",
-    //     thread::current().name(),
-    //     file_size,
-    //     start_offset,
-    //     end_offset
-    // );
+    let mut temp: i32 = 0;
+    let mut temp_sign = 1;
+    let mut place_buffer = Vec::with_capacity(50);
 
     while start_offset < end_offset {
-        if let Ok(n) = f.read_at(&mut buffer[rest_len..], start_offset) {
-            buffer[0..rest_len].copy_from_slice(&rest[0..rest_len]);
-
-            println!(
-                "{:?}: first aligned line {:?}",
-                thread::current().name(),
-                buffer.lines().next()
-            );
-
-            assert!(b'A' <= buffer[0] && buffer[0] <= b'Z');
-
-            let mut read_len = rest_len + n;
+        if let Ok(n) = f.read_at(&mut buffer, start_offset) {
+            let mut read_len = n;
 
             // eof
             if read_len == 0 {
                 break;
             }
 
-            // Offset by 1 error maybe
-            // if start_offset + read_len as u64 > end_offset {
-            //     assert!(
-            //         end_offset - start_offset < read_len as u64,
-            //         "start_offset {}, read_len {}, end_offset {}",
-            //         start_offset,
-            //         read_len,
-            //         end_offset
-            //     );
+            // process until end_offset
+            if start_offset + read_len as u64 > end_offset {
+                read_len = (end_offset - start_offset) as usize;
+            }
 
-            //     read_len = (end_offset - start_offset) as usize;
-            // }
-
-            for i in 0..read_len {
-                match buffer[read_len - 1 - i] {
+            for byte in &buffer[..read_len] {
+                let byte = *byte;
+                match byte {
                     b'\n' => {
-                        rest_len = i;
-                        rest[0..rest_len].copy_from_slice(&buffer[(read_len - i)..read_len]);
+                        temp = temp * temp_sign;
 
-                        let mut temp: i32 = 0;
-                        let mut temp_sign = 1;
-                        let mut place_buffer = Vec::with_capacity(50);
-
-                        for byte in &buffer[..read_len - i] {
-                            let byte = *byte;
-                            match byte {
-                                b'.' => continue,
-                                b';' => {}
-
-                                b'\n' => {
-                                    temp = temp * temp_sign;
-
-                                    if let Some(r) = map.get_mut(&place_buffer) {
-                                        r.add_temperature(temp);
-                                    } else {
-                                        map.insert(place_buffer.clone(), Record::new(temp));
-                                    }
-
-                                    place_buffer.clear();
-                                    temp = 0;
-                                    temp_sign = 1;
-                                }
-
-                                b'-' => temp_sign = -1,
-
-                                b'0'..=b'9' => temp = temp * 10 + (byte as i32) - b'0' as i32,
-
-                                _ => place_buffer.push(byte),
-                            }
+                        if let Some(r) = map.get_mut(&place_buffer) {
+                            r.add_temperature(temp);
+                        } else {
+                            map.insert(place_buffer.clone(), Record::new(temp));
                         }
 
-                        start_offset = start_offset + read_len as u64;
-                        break;
+                        // Reset startin new line
+                        temp = 0;
+                        temp_sign = 1;
+                        place_buffer.clear();
                     }
-                    _ => continue,
+
+                    b'-' => temp_sign = -1,
+
+                    b'0'..=b'9' => temp = temp * 10 + (byte as i32) - b'0' as i32,
+
+                    b'.' => continue,
+                    b';' => continue,
+                    _ => place_buffer.push(byte),
                 }
             }
+
+            start_offset = start_offset + read_len as u64;
         }
     }
 
     Ok(map)
 }
 
-fn align_end(f: &File, file_size: u64, end_offset: u64) -> u64 {
-    if end_offset == file_size {
-        return end_offset;
-    }
-
-    let end_offset = end_offset;
+fn align_start_line(f: &File, offset: u64) -> u64 {
+    let end_offset = offset;
     let mut buf: [u8; 100] = [0; 100];
 
     while let Ok(n) = f.read_at(&mut buf, end_offset) {
         for i in 0..n {
             if buf[i] == b'\n' {
                 return end_offset + i as u64 + 1; // end next to \n
-            }
-        }
-    }
-
-    unreachable!()
-}
-
-fn align_start(f: &File, start_offset: u64) -> u64 {
-    if start_offset == 0 {
-        return start_offset;
-    }
-
-    let start_offset = start_offset;
-    let mut buf: [u8; 100] = [0; 100];
-
-    while let Ok(n) = f.read_at(&mut buf, start_offset) {
-        for i in 0..n {
-            if buf[i] == b'\n' {
-                return start_offset + i as u64 + 1; // start next to \n
             }
         }
     }
@@ -294,5 +225,5 @@ fn collect_results(threads: Vec<ScopedJoinHandle<Result<HashMap<Vec<u8>, Record>
         .collect::<Vec<String>>()
         .join(", ");
 
-    format!("{{ {} }}", s)
+    format!("{{{}}}", s)
 }
